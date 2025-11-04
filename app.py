@@ -7,7 +7,7 @@ import hashlib
 import urllib.parse
 import streamlit as st
 
-# --- Résztvevők és párok (kérésed szerint) ---
+# --- Résztvevők és párok ---
 PARTICIPANTS = ["Dóri", "Máté", "Bence", "Gréti", "Anya", "Csenge", "Geri"]
 COUPLES = [("Dóri", "Máté"), ("Bence", "Gréti"), ("Csenge", "Geri")]  # ők nem húzhatják egymást
 
@@ -21,23 +21,21 @@ st.set_page_config(page_title="Karácsonyi sorsolás 🎁", page_icon="🎄", la
 st.title("Karácsonyi Secret Santa 🎁")
 st.caption("Személyre szóló, lezárt linkekkel. Párok és önmagad kizárva.")
 
-# --- HMAC segédek a lezárt linkhez ---
+# --- HMAC segédek (lezárt linkekhez) ---
 def make_token(name: str) -> str:
     if not LINK_SECRET:
         return ""
     key = LINK_SECRET.encode("utf-8")
     msg = name.encode("utf-8")
-    # Teljes hexdigestből is dolgozhatunk; rövidítés opcionális
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 def valid_token(name: str, token: str) -> bool:
     if not LINK_SECRET or not token:
         return False
     expected = make_token(name)
-    # időzítéstől független összehasonlítás
     return hmac.compare_digest(expected, token)
 
-# --- Sorsoló függvény (pár- és önkizárással) ---
+# --- Sorsoló függvény ---
 def secret_santa(names, couples=None, seed=None, max_tries=10000):
     if seed not in (None, ""):
         random.seed(int(seed))
@@ -63,7 +61,6 @@ def secret_santa(names, couples=None, seed=None, max_tries=10000):
             random.shuffle(cands)
             for t in cands:
                 asg[g]=t; used.add(t)
-                # előretekintés
                 ok=True
                 for g2 in order[i+1:]:
                     if not any(x not in used and x not in excl[g2] for x in targets):
@@ -74,7 +71,6 @@ def secret_santa(names, couples=None, seed=None, max_tries=10000):
         if back(0): return asg
     raise RuntimeError("Nem találtam érvényes kiosztást. Próbáld más SEED-del.")
 
-# --- Sorsolás elkészítése (fix SEED-del stabil) ---
 def get_mapping():
     return secret_santa(PARTICIPANTS, COUPLES, SEED)
 
@@ -84,30 +80,27 @@ except Exception as e:
     st.error(f"Sorsolási hiba: {e}")
     st.stop()
 
-# --- Query paramok: ?name=...&k=token ---
+# --- Query paramok ---
 qs = st.query_params
 qp_name = None
 qp_token = None
 if "name" in qs and qs.get("name"):
     qp_name = qs.get("name")
-    if isinstance(qp_name, list):  # ha valamiért lista
+    if isinstance(qp_name, list):
         qp_name = qp_name[0]
 if "k" in qs and qs.get("k"):
     qp_token = qs.get("k")
     if isinstance(qp_token, list):
         qp_token = qp_token[0]
 
-# --- Lezárt (lockolt) mód eldöntése ---
+# --- Lezárt mód eldöntése ---
 locked_mode = False
 locked_error = None
-
 if qp_name:
-    # Név csak akkor érvényes, ha a résztvevők között van
     if qp_name not in PARTICIPANTS:
         locked_mode = True
         locked_error = "Érvénytelen név a linkben."
     else:
-        # Token ellenőrzés
         if valid_token(qp_name, qp_token):
             locked_mode = True
         else:
@@ -121,10 +114,25 @@ if locked_mode:
     if locked_error:
         st.error(locked_error)
         st.stop()
-    # Nincs névválasztó; csak a saját eredmény jelenik meg
+
     who = qp_name
+
+    # 🔒 NE mutassuk azonnal — csak gombnyomásra
+    st.info("Ez egy személyre szóló, lezárt link. Az eredmény csak gombnyomásra látható.")
+    reveal_key = f"revealed::{who}"
+    if reveal_key not in st.session_state:
+        st.session_state[reveal_key] = False
+
+    if not st.session_state[reveal_key]:
+        if st.button("Húzás megtekintése"):
+            st.session_state[reveal_key] = True
+            st.rerun()
+        st.stop()
+
+    # Ha megnyomta a gombot, ekkor mutatjuk meg:
     st.success(f"**{who}** húzta: **{MAPPING[who]}**")
-    st.info("Ez egy lezárt link: a név nem módosítható. Ha másé vagy érvénytelen, kérj új linket a szervezőtől.")
+    st.caption("Ha nem a te linked nyílt meg, zárd be az oldalt, ne nézd meg másét. 😉")
+
 else:
     st.subheader("Névválasztós nézet (általános)")
     me = st.selectbox("Válaszd ki a neved:", PARTICIPANTS, index=0, key="me")
@@ -135,20 +143,18 @@ else:
             st.success(f"**{me}** húzta: **{MAPPING[me]}**")
 
     with col2:
-        # Személyre szóló, aláírt link ehhez a névhez
         if not LINK_SECRET:
             st.warning("LINK_SECRET hiányzik a Secrets-ből, így a lezárt linkek nem elérhetők.")
         else:
             token = make_token(me)
-            # csak a query param rész (a teljes URL-t az app címe elé tudod illeszteni)
             qp = urllib.parse.urlencode({"name": me, "k": token})
             link_suffix = "?" + qp
             st.link_button("Személyre szóló lezárt link", link_suffix,
-                           help="Ezt a linket küldheted tovább – csak a kiválasztott név húzását engedi megnézni.")
+                           help="Ezt a linket küldheted tovább – csak gombnyomásra jelenik meg az eredmény.")
 
 st.divider()
 
-# --- Admin nézet: teljes lista + lezárt linkek táblája ---
+# --- Admin nézet ---
 with st.expander("Admin nézet (teljes lista és személyre szóló linkek)"):
     code = st.text_input("Admin kód", type="password")
     if code and ADMIN_CODE and code == ADMIN_CODE:
@@ -177,9 +183,8 @@ with st.expander("Admin nézet (teljes lista és személyre szóló linkek)"):
                 rows["Név"].append(name)
                 rows["Query param"].append("?" + qp)
             st.table(rows)
-
             st.info(
-                "A fenti „Query param” részt illeszd az app fő URL-je mögé. "
+                "A „Query param” részt illeszd az app fő URL-je mögé.\n"
                 "Példa: https://SAJAT-APPOD.streamlit.app" + rows["Query param"][0]
             )
     else:
